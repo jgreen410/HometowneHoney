@@ -1,22 +1,23 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, FlatList, TouchableOpacity, TextInput, Keyboard, LayoutAnimation, Platform, UIManager, Image } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, TextInput, Keyboard, LayoutAnimation, Platform, UIManager } from 'react-native';
+import { HoneyImage } from '../../components/HoneyImage';
 import { MotiView } from 'moti';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
-import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+
+// react-native-maps is not available on web - imported conditionally below only when needed
 
 import { useApi } from '../../src/services/api';
 import { MapPin } from '../../src/types/schema';
 import { useAuthStore } from '../../src/store/authStore';
 import { useSettingsStore, RADIUS_PRESETS } from '../../src/store/settingsStore';
+import { useTheme } from '../../src/store/themeStore';
+import { LIGHT } from '../../src/constants/theme';
 import { regionForRadius } from '../../src/utils/geo';
 import { getHoneyImage } from '../../src/constants/images';
-
-// Center the map on the phone's location only once per app session, so that
-// navigating away and back to Discovery doesn't snap the view around.
-let hasCenteredThisSession = false;
+import { HoneycombBackground } from '../../components/HoneycombBackground';
 
 if (Platform.OS === 'android') {
   if (UIManager.setLayoutAnimationEnabledExperimental) {
@@ -27,69 +28,175 @@ if (Platform.OS === 'android') {
 export default function HomeScreen() {
   const router = useRouter();
   const api = useApi();
-  const mapRef = useRef<MapView>(null);
-  const userZip = useAuthStore(state => state.profile?.defaultZip ?? '');
+  const mapRef = useRef<any>(null);
+  const profile = useAuthStore(state => state.profile);
+  const userZip = profile?.defaultZip ?? '';
   const discoveryRadiusMiles = useSettingsStore(s => s.discoveryRadiusMiles);
   const setDiscoveryRadius = useSettingsStore(s => s.setDiscoveryRadius);
+  const { isDark, C } = useTheme();
 
   const [pins, setPins] = useState<MapPin[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [locating, setLocating] = useState(false);
-
   const [viewMode, setViewMode] = useState<'collapsed' | 'half'>('half');
   const [isFallbackMode, setIsFallbackMode] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
-  const searchTimeout = useRef<NodeJS.Timeout | null>(null);
-  // Last known phone location + current map center, used when changing radius.
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const centerRef = useRef<{ lat: number; lng: number }>({ lat: 39.8283, lng: -98.5795 });
+  const hasCenteredRef = useRef(false);
 
   const INITIAL_REGION = {
-    latitude: 39.8283,
-    longitude: -98.5795,
-    latitudeDelta: 40,
-    longitudeDelta: 40,
+    latitude: 39.8283, longitude: -98.5795,
+    latitudeDelta: 40, longitudeDelta: 40,
   };
 
-  // Move the map to the phone's location at the saved radius. Falls back to the
-  // user's home ZIP (if set) when location permission is unavailable.
+  const fetchHivesInView = async (region: any) => {
+    setLoading(true);
+    setIsFallbackMode(false);
+    const box = {
+      minLat: region.latitude - region.latitudeDelta / 2,
+      maxLat: region.latitude + region.latitudeDelta / 2,
+      minLng: region.longitude - region.longitudeDelta / 2,
+      maxLng: region.longitude + region.longitudeDelta / 2,
+    };
+    let data = await api.getMapPins(box);
+    if (data.length === 0) {
+      data = await api.findClosestHives(region.latitude, region.longitude);
+      setIsFallbackMode(true);
+    }
+    setPins(data);
+    setLoading(false);
+  };
+
+  const onRegionChangeComplete = (region: any) => {
+    centerRef.current = { lat: region.latitude, lng: region.longitude };
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    searchTimeout.current = setTimeout(() => fetchHivesInView(region), 600);
+  };
+
+  const geocodeLocation = async (query: string) => {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&countrycodes=us&limit=1`,
+        { headers: { 'User-Agent': 'HometownHoneyApp/1.0' } }
+      );
+      const data = await res.json();
+      if (data?.length > 0) {
+        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      }
+    } catch { /* ignore */ }
+    return null;
+  };
+
+  const handleSearch = async (query: string) => {
+    if (query.length <= 2) return;
+    const location = await geocodeLocation(query);
+    if (location) {
+      Keyboard.dismiss();
+      if (Platform.OS === 'web') {
+        await fetchHivesInView({
+          latitude: location.lat,
+          longitude: location.lng,
+          latitudeDelta: 0.4,
+          longitudeDelta: 0.4,
+        });
+      } else {
+        mapRef.current?.animateToRegion({
+          latitude: location.lat,
+          longitude: location.lng,
+          latitudeDelta: 0.4,
+          longitudeDelta: 0.4,
+        }, 1000);
+      }
+    }
+  };
+
   const centerOnUser = async (opts: { fallbackZip?: boolean } = {}) => {
     setLocating(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        const pos = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         const { latitude, longitude } = pos.coords;
         userLocationRef.current = { lat: latitude, lng: longitude };
         const radius = useSettingsStore.getState().discoveryRadiusMiles;
-        mapRef.current?.animateToRegion(regionForRadius(latitude, longitude, radius), 800);
+        if (Platform.OS === 'web') {
+          await fetchHivesInView({
+            latitude,
+            longitude,
+            latitudeDelta: 0.4,
+            longitudeDelta: 0.4,
+          });
+        } else {
+          mapRef.current?.animateToRegion(regionForRadius(latitude, longitude, radius), 800);
+        }
         return;
       }
-    } catch {
-      // ignore and fall back below
-    } finally {
-      setLocating(false);
-    }
-    if (opts.fallbackZip && userZip && userZip.length === 5) {
-      handleSearch(userZip);
-    }
+    } catch { /* fall through */ }
+    finally { setLocating(false); }
+    if (opts.fallbackZip && userZip?.length === 5) await handleSearch(userZip);
   };
 
-  // One-time auto-center when Discovery first mounts this session.
   useEffect(() => {
-    if (hasCenteredThisSession) return;
-    hasCenteredThisSession = true;
-    centerOnUser({ fallbackZip: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (hasCenteredRef.current) return;
 
-  const handleLocate = () => {
-    Haptics.selectionAsync();
-    centerOnUser();
-  };
+    // If on Mobile and map is not ready yet, wait for the map to be ready
+    if (Platform.OS !== 'web' && !mapReady) return;
+
+    const runInitialization = async () => {
+      setLocating(true);
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const { latitude, longitude } = pos.coords;
+          userLocationRef.current = { lat: latitude, lng: longitude };
+          const radius = useSettingsStore.getState().discoveryRadiusMiles;
+          
+          hasCenteredRef.current = true;
+          if (Platform.OS === 'web') {
+            await fetchHivesInView({
+              latitude,
+              longitude,
+              latitudeDelta: 0.4,
+              longitudeDelta: 0.4,
+            });
+          } else {
+            mapRef.current?.animateToRegion(regionForRadius(latitude, longitude, radius), 800);
+          }
+          return;
+        }
+      } catch { /* fall through */ }
+      finally {
+        setLocating(false);
+      }
+
+      // If profile is not loaded yet, wait for it
+      if (!profile) return;
+
+      // GPS location is not available. Try fallback zip.
+      if (userZip?.length === 5) {
+        hasCenteredRef.current = true;
+        await handleSearch(userZip);
+      } else {
+        // If zip is not available (either empty or fully loaded as empty), and we are on Web, load default center
+        hasCenteredRef.current = true;
+        if (Platform.OS === 'web') {
+          await fetchHivesInView({
+            latitude: INITIAL_REGION.latitude,
+            longitude: INITIAL_REGION.longitude,
+            latitudeDelta: INITIAL_REGION.latitudeDelta,
+            longitudeDelta: INITIAL_REGION.longitudeDelta,
+          });
+        }
+      }
+    };
+
+    runInitialization();
+  }, [profile, userZip, mapReady]);
 
   const cycleRadius = () => {
     Haptics.selectionAsync();
@@ -102,78 +209,10 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (searchQuery.length > 2) {
-      const delaySearch = setTimeout(() => {
-        handleSearch(searchQuery);
-      }, 800);
-
-      return () => clearTimeout(delaySearch);
+      const t = setTimeout(() => handleSearch(searchQuery), 800);
+      return () => clearTimeout(t);
     }
   }, [searchQuery]);
-
-  const geocodeLocation = async (query: string) => {
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&countrycodes=us&limit=1`,
-        { headers: { 'User-Agent': 'HometownHoneyApp/1.0' } }
-      );
-      const data = await response.json();
-      if (data && data.length > 0) {
-        return {
-          lat: parseFloat(data[0].lat),
-          lng: parseFloat(data[0].lon),
-          displayName: data[0].display_name
-        };
-      }
-    } catch (error) {
-      console.log("Geocoding failed:", error);
-    }
-    return null;
-  };
-
-  const handleSearch = async (query: string) => {
-    if (query.length <= 2) return;
-
-    const location = await geocodeLocation(query);
-    if (location) {
-      Keyboard.dismiss();
-      mapRef.current?.animateToRegion({
-        latitude: location.lat,
-        longitude: location.lng,
-        latitudeDelta: 0.4,
-        longitudeDelta: 0.4,
-      }, 1000);
-    }
-  };
-
-  const fetchHivesInView = async (region: any) => {
-    setLoading(true);
-    setIsFallbackMode(false);
-
-    const box = {
-      minLat: region.latitude - (region.latitudeDelta / 2),
-      maxLat: region.latitude + (region.latitudeDelta / 2),
-      minLng: region.longitude - (region.longitudeDelta / 2),
-      maxLng: region.longitude + (region.longitudeDelta / 2),
-    };
-
-    let data = await api.getMapPins(box);
-
-    if (data.length === 0) {
-      data = await api.findClosestHives(region.latitude, region.longitude);
-      setIsFallbackMode(true);
-    }
-
-    setPins(data);
-    setLoading(false);
-  };
-
-  const onRegionChangeComplete = (region: any) => {
-    centerRef.current = { lat: region.latitude, lng: region.longitude };
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(() => {
-      fetchHivesInView(region);
-    }, 600);
-  };
 
   const handlePress = (item: MapPin) => {
     Haptics.selectionAsync();
@@ -191,96 +230,149 @@ export default function HomeScreen() {
   };
 
   return (
-    <View className="flex-1 bg-white">
-      <View className={`w-full bg-gray-200 relative ${viewMode === 'collapsed' ? 'h-[85%]' : 'h-[40%]'}`}>
-        <MapView
-          ref={mapRef}
-          style={{ width: '100%', height: '100%' }}
-          initialRegion={INITIAL_REGION}
-          provider={PROVIDER_DEFAULT}
-          showsUserLocation
-          onRegionChangeComplete={onRegionChangeComplete}
-        >
-          {pins.map((pin) => (
-            <Marker
-              key={pin.id}
-              coordinate={{ latitude: pin.lat ?? 0, longitude: pin.lng ?? 0 }}
-              title={pin.businessName}
-              onPress={() => handlePress(pin)}
-            >
-              <View className={`items-center justify-center h-10 w-10 rounded-full border-2 shadow-sm ${
-                pin.isClaimed ? 'bg-honey-400 border-white' : 'bg-gray-400 border-white'
-              }`}>
-                <Text style={{ fontSize: 20 }}>{pin.isClaimed ? '🐝' : '❔'}</Text>
-              </View>
-              <View className="items-center -mt-1">
-                <View className={`w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] ${
-                  pin.isClaimed ? 'border-t-honey-400' : 'border-t-gray-400'
-                }`} />
-              </View>
-            </Marker>
-          ))}
-        </MapView>
-
-        {loading && (
-          <View className="absolute bottom-6 self-center bg-white px-4 py-2 rounded-full shadow-lg">
-            <Text className="text-xs font-bold text-honey-500 uppercase tracking-widest">Scanning...</Text>
+    <View style={{ flex: 1, backgroundColor: C.bg }}>
+      {/* Map area */}
+      <View style={{
+        width: '100%',
+        height: Platform.OS === 'web' ? '100%' : (viewMode === 'collapsed' ? '85%' : '42%'),
+        backgroundColor: '#D4A84A',
+      }}>
+        {Platform.OS === 'web' ? (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 16, color: C.textPrimary }}>Map view unavailable on web</Text>
           </View>
+        ) : (
+          <NativeMapView ref={mapRef} pins={pins} onRegionChangeComplete={onRegionChangeComplete} initialRegion={INITIAL_REGION} handlePress={handlePress} onMapReady={() => setMapReady(true)} />
         )}
 
-        {/* Adjustable radius pill — tap to cycle presets; persists across loads */}
+        {loading && (
+          <MotiView
+            from={{ opacity: 0, translateY: 8 }}
+            animate={{ opacity: 1, translateY: 0 }}
+            style={{
+              position: 'absolute', bottom: 16, alignSelf: 'center',
+              backgroundColor: C.surface,
+              paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
+              shadowColor: '#C17B1A', shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
+              borderWidth: 1, borderColor: C.border,
+            }}
+          >
+            <Text style={{
+              fontFamily: 'DMSans_700Bold', fontSize: 10, letterSpacing: 2,
+              textTransform: 'uppercase', color: C.amberDeep,
+            }}>
+              Scanning the hive…
+            </Text>
+          </MotiView>
+        )}
+
+        {/* Radius pill */}
         <TouchableOpacity
           onPress={cycleRadius}
-          className="absolute top-14 right-3 bg-white/95 px-3 py-2 rounded-full shadow-md flex-row items-center"
+          activeOpacity={0.85}
+          style={{
+            position: 'absolute', top: 52, right: 12,
+            backgroundColor: isDark ? 'rgba(44,26,6,0.95)' : 'rgba(255,248,232,0.95)',
+            paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20,
+            flexDirection: 'row', alignItems: 'center',
+            shadowColor: '#C17B1A', shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.25, shadowRadius: 6, elevation: 4,
+            borderWidth: 1, borderColor: C.border,
+          }}
         >
-          <Ionicons name="resize-outline" size={15} color="#D9AA18" style={{ marginRight: 5 }} />
-          <Text className="text-xs font-bold text-earth-900">{discoveryRadiusMiles} mi</Text>
+          <Ionicons name="resize-outline" size={14} color={C.amberDeep} style={{ marginRight: 4 }} />
+          <Text style={{ fontFamily: 'DMSans_700Bold', fontSize: 12, color: C.amberDeep }}>
+            {discoveryRadiusMiles} mi
+          </Text>
         </TouchableOpacity>
 
-        {/* Re-center on the phone's location */}
+        {/* Locate button */}
         <TouchableOpacity
-          onPress={handleLocate}
+          onPress={() => { Haptics.selectionAsync(); centerOnUser(); }}
           disabled={locating}
-          className="absolute bottom-10 right-3 bg-white w-12 h-12 rounded-full shadow-md items-center justify-center"
+          activeOpacity={0.85}
+          style={{
+            position: 'absolute', bottom: 40, right: 12,
+            backgroundColor: C.surface,
+            width: 48, height: 48, borderRadius: 24,
+            alignItems: 'center', justifyContent: 'center',
+            shadowColor: '#C17B1A', shadowOffset: { width: 0, height: 3 },
+            shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
+            borderWidth: 1, borderColor: C.border,
+          }}
         >
           <Ionicons
             name={locating ? 'locate-outline' : 'locate'}
             size={22}
-            color={locating ? '#9ca3af' : '#D9AA18'}
+            color={locating ? C.placeholder : C.amberDeep}
           />
         </TouchableOpacity>
       </View>
 
-      <View className="flex-1 bg-white rounded-t-3xl -mt-6 shadow-xl overflow-hidden flex-col">
+      {/* List panel */}
+      <View style={{
+        flex: 1,
+        backgroundColor: C.surface,
+        borderTopLeftRadius: 28, borderTopRightRadius: 28,
+        marginTop: -24,
+        shadowColor: '#2B1800', shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.15, shadowRadius: 12, elevation: 10,
+        overflow: 'hidden',
+      }}>
+        <HoneycombBackground opacity={0.04} />
+
+        {/* Pull handle + toggle */}
         <TouchableOpacity
           onPress={toggleViewMode}
-          activeOpacity={0.9}
-          className="items-center pt-3 pb-2 bg-white w-full border-b border-gray-50 z-20"
+          activeOpacity={0.85}
+          style={{
+            alignItems: 'center', paddingTop: 10, paddingBottom: 8,
+            borderBottomWidth: 1, borderBottomColor: C.divider,
+          }}
         >
-          <View className="w-12 h-1.5 bg-gray-300 rounded-full mb-1" />
-          <Text className="text-[10px] text-gray-400 font-bold uppercase">
-            {viewMode === 'half' ? "Tap to Expand Map" : "Tap to See List"}
+          <View style={{
+            width: 40, height: 4, borderRadius: 2,
+            backgroundColor: isDark ? C.border : C.placeholder, marginBottom: 4,
+          }} />
+          <Text style={{
+            fontFamily: 'DMSans_700Bold', fontSize: 9, letterSpacing: 1.5,
+            textTransform: 'uppercase', color: C.textMuted,
+          }}>
+            {viewMode === 'half' ? 'Expand map' : 'See list'}
           </Text>
         </TouchableOpacity>
 
-        <View className="px-6 pb-2 pt-2 bg-white z-10 shadow-sm border-b border-gray-50">
-          <Text className="text-2xl font-bold text-earth-900 mb-3 mt-1">
-            {isFallbackMode ? "Nearby Hives" : "Local Hives"}
+        {/* Header + search */}
+        <View style={{
+          paddingHorizontal: 24, paddingVertical: 12,
+          borderBottomWidth: 1, borderBottomColor: C.divider,
+        }}>
+          <Text style={{
+            fontFamily: 'PlayfairDisplay_700Bold',
+            fontSize: 28, color: C.textPrimary, marginBottom: 10,
+          }}>
+            {isFallbackMode ? 'Nearby Hives' : 'Local Hives'}
           </Text>
 
-          <View className="bg-white flex-row items-center p-3 rounded-xl border border-gray-300 shadow-sm mb-2">
-            <Ionicons name="search" size={20} color="#000" style={{ marginRight: 8 }} />
+          <View style={{
+            backgroundColor: C.surfaceAlt,
+            flexDirection: 'row', alignItems: 'center',
+            borderRadius: 16, paddingHorizontal: 12, paddingVertical: 10,
+            borderWidth: 1, borderColor: C.border,
+          }}>
+            <Ionicons name="search" size={18} color={C.amberDeep} style={{ marginRight: 8 }} />
             <TextInput
-              className="flex-1 font-semibold text-black text-base h-full"
-              placeholder="Search ZIP or City..."
-              placeholderTextColor="#9ca3af"
+              style={{ flex: 1, fontFamily: 'DMSans_400Regular', fontSize: 15, color: C.textPrimary }}
+              placeholder="Search ZIP or City…"
+              placeholderTextColor={C.textMuted}
               value={searchQuery}
               onChangeText={setSearchQuery}
               returnKeyType="search"
             />
             {searchQuery.length > 0 && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Ionicons name="close-circle" size={20} color="#9ca3af" />
+                <Ionicons name="close-circle" size={18} color={C.placeholder} />
               </TouchableOpacity>
             )}
           </View>
@@ -289,50 +381,168 @@ export default function HomeScreen() {
         <FlatList
           data={pins}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 24, paddingTop: 0, paddingBottom: 100 }}
+          contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
           renderItem={({ item, index }) => {
-            const thumb = getHoneyImage(item.id);
+            const thumb = getHoneyImage(item.id, item.businessName);
+
+            const cardBg = isDark
+              ? (item.isClaimed ? LIGHT.surface : LIGHT.surfaceAlt)
+              : (item.isClaimed ? C.surface : C.surfaceAlt);
+
+            const cardBorderColor = isDark
+              ? (item.isClaimed ? LIGHT.border : LIGHT.divider)
+              : (item.isClaimed ? C.border : C.divider);
+
+            const cardTitleColor = isDark ? LIGHT.textPrimary : C.textPrimary;
+            const cardMutedColor = isDark ? LIGHT.textSecondary : C.textMuted;
+
+            const badgeBg = isDark
+              ? (item.isClaimed ? LIGHT.amberSoft : LIGHT.surface)
+              : (item.isClaimed ? C.amberSoft : C.surface);
+
+            const badgeIconColor = isDark
+              ? (item.isClaimed ? LIGHT.amberDeep : LIGHT.placeholder)
+              : (item.isClaimed ? C.amberDeep : C.placeholder);
+
+            const thumbBorderColor = isDark ? LIGHT.border : C.border;
 
             return (
               <MotiView
-                from={{ opacity: 0, translateY: 20 }}
+                from={{ opacity: 0, translateY: 16 }}
                 animate={{ opacity: 1, translateY: 0 }}
-                transition={{ delay: index * 50 }}
+                transition={{ delay: index * 60 }}
               >
                 <TouchableOpacity
                   onPress={() => handlePress(item)}
-                  className={`mb-4 p-3 rounded-2xl border flex-row items-center ${
-                    item.isClaimed
-                      ? 'bg-white border-honey-100 shadow-sm'
-                      : 'bg-gray-50 border-gray-200 border-dashed'
-                  }`}
+                  activeOpacity={0.88}
+                  style={{
+                    marginBottom: 12, padding: 12, borderRadius: 20,
+                    flexDirection: 'row', alignItems: 'center',
+                    backgroundColor: cardBg,
+                    borderWidth: 1,
+                    borderColor: cardBorderColor,
+                    borderStyle: item.isClaimed ? 'solid' : 'dashed',
+                    shadowColor: '#C17B1A', shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: item.isClaimed ? (isDark ? 0.22 : 0.12) : 0,
+                    shadowRadius: 6, elevation: item.isClaimed ? 3 : 0,
+                  }}
                 >
-                  <View className="h-16 w-16 rounded-xl bg-gray-200 mr-4 overflow-hidden border border-gray-100">
-                    <Image source={{ uri: thumb }} className="h-full w-full" />
+                  <View style={{
+                    height: 64, width: 64, borderRadius: 14,
+                    overflow: 'hidden', marginRight: 14,
+                    borderWidth: 1, borderColor: thumbBorderColor,
+                  }}>
+                    <HoneyImage uri={thumb} style={{ width: '100%', height: '100%' }} contentFit="cover" />
                   </View>
 
-                  <View className="flex-1">
-                    <Text className="text-lg font-bold text-earth-900">{item.businessName}</Text>
-                    <Text className="text-xs text-earth-500 mt-1">
-                      {item.zipCode} ? {isFallbackMode ? '~ Nearby' : (item.isClaimed ? 'Verified' : 'Directory')}
+                  <View style={{ flex: 1 }}>
+                    <Text style={{
+                      fontFamily: 'PlayfairDisplay_700Bold',
+                      fontSize: 17, color: cardTitleColor,
+                    }}>
+                      {item.businessName}
+                    </Text>
+                    <Text style={{
+                      fontFamily: 'DMSans_400Regular',
+                      fontSize: 12, color: cardMutedColor, marginTop: 3, letterSpacing: 0.3,
+                    }}>
+                      {item.zipCode} · {isFallbackMode ? 'Nearby' : (item.isClaimed ? 'Verified' : 'Directory')}
                     </Text>
                   </View>
 
-                  <View className={`h-10 w-10 rounded-full items-center justify-center ${
-                    item.isClaimed ? 'bg-honey-50' : 'bg-gray-200'
-                  }`}>
-                    {item.isClaimed ? (
-                      <MaterialCommunityIcons name="basket" size={20} color="#D9AA18" />
-                    ) : (
-                      <Ionicons name="help" size={24} color="#9ca3af" />
-                    )}
+                  <View style={{
+                    width: 38, height: 38, borderRadius: 19,
+                    alignItems: 'center', justifyContent: 'center',
+                    backgroundColor: badgeBg,
+                  }}>
+                    {item.isClaimed
+                      ? <MaterialCommunityIcons name="basket" size={20} color={badgeIconColor} />
+                      : <Ionicons name="help" size={20} color={badgeIconColor} />
+                    }
                   </View>
                 </TouchableOpacity>
               </MotiView>
             );
           }}
+          ListEmptyComponent={
+            <View style={{ alignItems: 'center', paddingTop: 48 }}>
+              <Text style={{ fontSize: 40, marginBottom: 12 }}>🐝</Text>
+              <Text style={{
+                fontFamily: 'PlayfairDisplay_700Bold',
+                fontSize: 18, color: C.textPrimary, marginBottom: 4,
+              }}>
+                No hives in sight
+              </Text>
+              <Text style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 13, color: C.textMuted, textAlign: 'center',
+              }}>
+                Pan the map to scout a new patch of clover
+              </Text>
+            </View>
+          }
         />
       </View>
     </View>
   );
 }
+
+// Separate native component to avoid importing react-native-maps on web
+const NativeMapView = React.forwardRef<any, any>(
+  ({ pins, onRegionChangeComplete, initialRegion, handlePress, onMapReady }, ref) => {
+    try {
+      const RNMaps = require('react-native-maps');
+      const MapView = RNMaps.default;
+      const Marker = RNMaps.Marker;
+      const PROVIDER_DEFAULT = RNMaps.PROVIDER_DEFAULT;
+
+      return (
+        <MapView
+          ref={ref}
+          style={{ width: '100%', height: '100%' }}
+          initialRegion={initialRegion}
+          provider={PROVIDER_DEFAULT}
+          showsUserLocation
+          onRegionChangeComplete={onRegionChangeComplete}
+          onMapReady={onMapReady}
+        >
+          {pins.map((pin: MapPin) => (
+            <Marker
+              key={pin.id}
+              coordinate={{ latitude: pin.lat ?? 0, longitude: pin.lng ?? 0 }}
+              title={pin.businessName}
+              onPress={() => handlePress(pin)}
+            >
+              <View style={{
+                alignItems: 'center', justifyContent: 'center',
+                height: 40, width: 40, borderRadius: 20,
+                borderWidth: 2, borderColor: '#FFF8E8',
+                backgroundColor: pin.isClaimed ? '#C17B1A' : '#7A5930',
+                shadowColor: '#2B1800',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.4, shadowRadius: 4, elevation: 4,
+              }}>
+                <Text style={{ fontSize: 18 }}>{pin.isClaimed ? '🐝' : '❔'}</Text>
+              </View>
+              <View style={{ alignItems: 'center', marginTop: -1 }}>
+                <View style={{
+                  width: 0, height: 0,
+                  borderLeftWidth: 5, borderLeftColor: 'transparent',
+                  borderRightWidth: 5, borderRightColor: 'transparent',
+                  borderTopWidth: 6,
+                  borderTopColor: pin.isClaimed ? '#C17B1A' : '#7A5930',
+                }} />
+              </View>
+            </Marker>
+          ))}
+        </MapView>
+      );
+    } catch (e) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ fontFamily: 'DMSans_400Regular' }}>Map unavailable</Text>
+        </View>
+      );
+    }
+  }
+);

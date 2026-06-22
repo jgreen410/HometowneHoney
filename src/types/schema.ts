@@ -24,7 +24,7 @@ export interface Product {
   price: number;
   batchType: string;
   stockLevel: number;
-  images: string[];
+  images: (string | number)[];
 }
 
 export type MapPin = DirectoryListing & {

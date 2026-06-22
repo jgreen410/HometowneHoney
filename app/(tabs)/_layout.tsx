@@ -6,6 +6,7 @@ export default function TabLayout() {
   return (
     <Tabs
       initialRouteName="index"
+      backBehavior="history"
       screenOptions={{ headerShown: false }}
       tabBar={(props) => <AnimatedTabBar {...props} />}
     >
@@ -14,7 +15,6 @@ export default function TabLayout() {
       <Tabs.Screen name="index" options={{ title: 'Discover' }} />
       <Tabs.Screen name="seller-dashboard" options={{ title: 'My Batch' }} />
       <Tabs.Screen name="profile" options={{ title: 'Profile' }} />
-      <Tabs.Screen name="favs" options={{ href: null, title: 'Favorites' }} />
       <Tabs.Screen name="shop/[id]" options={{ href: null }} />
       <Tabs.Screen name="claim/[id]" options={{ href: null }} />
       <Tabs.Screen

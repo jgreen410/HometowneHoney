@@ -1,74 +1,78 @@
-import '../global.css';
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import {
+  PlayfairDisplay_700Bold,
+  PlayfairDisplay_700Bold_Italic,
+  PlayfairDisplay_900Black,
+} from '@expo-google-fonts/playfair-display';
+import {
+  DMSans_400Regular,
+  DMSans_500Medium,
+  DMSans_700Bold,
+} from '@expo-google-fonts/dm-sans';
+import {
+  CormorantGaramond_700Bold,
+} from '@expo-google-fonts/cormorant-garamond';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
 
-import { useColorScheme } from '@/components/useColorScheme';
 import { useAuthStore } from '../src/store/authStore';
+import { useThemeSync, useTheme } from '../src/store/themeStore';
 
-export {
-  // Catch any errors thrown by the Layout component.
-  ErrorBoundary,
-} from 'expo-router';
-
-// Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
+
+export { ErrorBoundary } from 'expo-router';
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
-    ...FontAwesome.font,
+    PlayfairDisplay_700Bold,
+    // Register Playfair italic under the name the screens actually reference
+    // (the Google Fonts export uses an extra underscore).
+    PlayfairDisplay_700BoldItalic: PlayfairDisplay_700Bold_Italic,
+    PlayfairDisplay_900Black,
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_700Bold,
+    CormorantGaramond_700Bold,
   });
 
-  // Kick off the auth/session check once on startup.
   const init = useAuthStore((s) => s.init);
-  useEffect(() => {
-    init();
-  }, [init]);
+  useEffect(() => { init(); }, [init]);
 
-  // Expo Router uses Error Boundaries to catch errors in the navigation tree.
-  useEffect(() => {
-    if (error) throw error;
-  }, [error]);
+  useEffect(() => { if (error) throw error; }, [error]);
 
   useEffect(() => {
-    if (loaded) {
-      SplashScreen.hideAsync();
-    }
+    if (loaded) SplashScreen.hideAsync();
   }, [loaded]);
 
-  if (!loaded) {
-    return null;
-  }
+  if (!loaded) return null;
 
   return <RootLayoutNav />;
 }
 
 function RootLayoutNav() {
-  const colorScheme = useColorScheme();
   const mode = useAuthStore((s) => s.mode);
   const loading = useAuthStore((s) => s.loading);
+  const { isDark, C } = useTheme();
 
-  // While we're still checking for an existing session, render nothing
-  // (splash stays up) so we don't flash the login screen.
-  if (loading) {
-    return null;
-  }
+  // Keep NativeWind's color scheme in lock-step with our store + hydrate saved pref.
+  useThemeSync();
 
-  const signedIn = mode !== null; // demo or authenticated
+  if (loading) return null;
+
+  const signedIn = mode !== null;
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      {/*
-        Declarative auth gating (expo-router v6). Only the group whose guard is
-        true is navigable, and expo-router swaps groups when `mode` changes —
-        no imperative router.replace, so no navigation-context races.
-      */}
-      <Stack screenOptions={{ headerShown: false }}>
+    <>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: C.bg },
+        }}
+      >
         <Stack.Protected guard={signedIn}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
@@ -77,6 +81,6 @@ function RootLayoutNav() {
           <Stack.Screen name="login" options={{ headerShown: false }} />
         </Stack.Protected>
       </Stack>
-    </ThemeProvider>
+    </>
   );
 }

@@ -2,16 +2,23 @@ import React, { useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useCartStore } from '../../src/store/cartStore';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import { MotiView } from 'moti';
 import * as Haptics from 'expo-haptics';
+
+import { useCartStore } from '../../src/store/cartStore';
 import { useOrderStore } from '../../src/store/orderStore';
 import { useAuthStore } from '../../src/store/authStore';
+import { useTheme } from '../../src/store/themeStore';
+import { HoneycombBackground } from '../../components/HoneycombBackground';
 
 export default function CartScreen() {
   const router = useRouter();
   const { items, removeItem, getTotalPrice, clearCart } = useCartStore();
-  const placeOrder = useOrderStore((state) => state.placeOrder);
-  const customerName = useAuthStore((state) => state.profile?.name ?? 'A Honey Fan');
+  const placeOrder = useOrderStore((s) => s.placeOrder);
+  const customerName = useAuthStore((s) => s.profile?.name ?? 'A Honey Fan');
+  const { C } = useTheme();
   const [isProcessing, setIsProcessing] = useState(false);
 
   const handleRemove = (id: string) => {
@@ -22,84 +29,158 @@ export default function CartScreen() {
   const handleCheckout = async () => {
     setIsProcessing(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-
-    const orderItems = [...items];
-    const total = getTotalPrice();
     try {
-      await placeOrder(orderItems, total, customerName);
+      await placeOrder([...items], getTotalPrice(), customerName);
       clearCart();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Order Placed!", "The beekeeper has been notified.", [
-        { text: "OK", onPress: () => router.back() }
+      Alert.alert('Order Placed!', 'The beekeeper has been notified.', [
+        { text: 'Sweet!', onPress: () => router.back() },
       ]);
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Checkout failed", e?.message ?? "Please try again.");
+      Alert.alert('Checkout failed', e?.message ?? 'Please try again.');
     } finally {
       setIsProcessing(false);
     }
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
-      {/* Header */}
-      <View className="px-6 py-4 border-b border-gray-100 flex-row justify-between items-center">
-        <Text className="text-2xl font-bold text-earth-900">Your Harvest</Text>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Text className="text-earth-500 text-lg">Close</Text>
-        </TouchableOpacity>
-      </View>
-
-      {items.length === 0 ? (
-        <View className="flex-1 justify-center items-center opacity-50">
-          <Text className="text-4xl mb-4">🍯</Text>
-          <Text className="text-earth-500 font-bold">Your crate is empty.</Text>
-        </View>
-      ) : (
-        <View className="flex-1">
-          <FlatList
-            data={items}
-            keyExtractor={(item) => item.cartId}
-            contentContainerStyle={{ padding: 24 }}
-            renderItem={({ item }) => (
-              <View className="flex-row items-center mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
-                <View className="flex-1">
-                  <Text className="text-xs font-bold text-honey-500 uppercase mb-1">
-                    From: {item.sellerName}
-                  </Text>
-                  <Text className="text-lg font-bold text-earth-900">{item.name}</Text>
-                  <Text className="text-earth-500">${(item.price / 100).toFixed(2)}</Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => handleRemove(item.cartId)}
-                  className="px-3 py-2"
-                >
-                  <Text className="text-red-400 font-bold text-xs">REMOVE</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          />
-
-          {/* Checkout Bar */}
-          <View className="p-6 border-t border-gray-100">
-            <View className="flex-row justify-between mb-4">
-              <Text className="text-earth-500">Subtotal</Text>
-              <Text className="font-bold text-lg">${(getTotalPrice() / 100).toFixed(2)}</Text>
-            </View>
-            <TouchableOpacity
-              className={`w-full py-5 rounded-2xl items-center shadow-sm ${isProcessing ? 'bg-gray-300' : 'bg-honey-400'}`}
-              onPress={handleCheckout}
-              disabled={isProcessing}
-            >
-              {isProcessing ? (
-                <ActivityIndicator color="#000" />
-              ) : (
-                <Text className="text-earth-900 font-bold text-lg">Checkout</Text>
-              )}
-            </TouchableOpacity>
+    <View style={{ flex: 1, backgroundColor: C.bg }}>
+      <HoneycombBackground opacity={0.04} />
+      <SafeAreaView style={{ flex: 1 }}>
+        {/* Header */}
+        <View style={{
+          paddingHorizontal: 24, paddingTop: 8, paddingBottom: 16,
+          flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end',
+          borderBottomWidth: 1, borderBottomColor: C.divider,
+        }}>
+          <View>
+            <Text style={{
+              fontFamily: 'DMSans_700Bold', fontSize: 10,
+              letterSpacing: 2, textTransform: 'uppercase',
+              color: C.textMuted, marginBottom: 4,
+            }}>
+              {items.length} {items.length === 1 ? 'jar' : 'jars'}
+            </Text>
+            <Text style={{ fontFamily: 'PlayfairDisplay_700Bold', fontSize: 32, color: C.textPrimary }}>
+              Your Harvest
+            </Text>
           </View>
+          <TouchableOpacity onPress={() => router.back()} hitSlop={8}>
+            <Ionicons name="close" size={24} color={C.textSecondary} />
+          </TouchableOpacity>
         </View>
-      )}
-    </SafeAreaView>
+
+        {items.length === 0 ? (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 }}>
+            <Text style={{ fontSize: 52, marginBottom: 16 }}>🍯</Text>
+            <Text style={{
+              fontFamily: 'PlayfairDisplay_700Bold',
+              fontSize: 22, color: C.textPrimary, textAlign: 'center', marginBottom: 8,
+            }}>
+              Your crate is empty
+            </Text>
+            <Text style={{
+              fontFamily: 'DMSans_400Regular',
+              fontSize: 14, color: C.textSecondary, textAlign: 'center', lineHeight: 22,
+            }}>
+              Find a local beekeeper and ladle some honey into your harvest.
+            </Text>
+          </View>
+        ) : (
+          <View style={{ flex: 1 }}>
+            <FlatList
+              data={items}
+              keyExtractor={(item) => item.cartId}
+              contentContainerStyle={{ padding: 20, paddingBottom: 20 }}
+              renderItem={({ item, index }) => (
+                <MotiView
+                  from={{ opacity: 0, translateX: -12 }}
+                  animate={{ opacity: 1, translateX: 0 }}
+                  transition={{ delay: index * 60 }}
+                >
+                  <View style={{
+                    flexDirection: 'row', alignItems: 'center',
+                    marginBottom: 10, padding: 16,
+                    backgroundColor: C.surface,
+                    borderRadius: 18,
+                    borderWidth: 1, borderColor: C.border,
+                  }}>
+                    <View style={{
+                      width: 44, height: 44, borderRadius: 22,
+                      backgroundColor: C.amberSoft,
+                      alignItems: 'center', justifyContent: 'center', marginRight: 14,
+                      borderWidth: 1, borderColor: C.border,
+                    }}>
+                      <Text style={{ fontSize: 22 }}>🍯</Text>
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={{
+                        fontFamily: 'DMSans_700Bold', fontSize: 10,
+                        letterSpacing: 1.2, textTransform: 'uppercase',
+                        color: C.amberDeep, marginBottom: 3,
+                      }}>
+                        {item.sellerName}
+                      </Text>
+                      <Text style={{ fontFamily: 'PlayfairDisplay_700Bold', fontSize: 16, color: C.textPrimary }}>
+                        {item.name}
+                      </Text>
+                      <Text style={{
+                        fontFamily: 'DMSans_500Medium', fontSize: 14, color: C.amberDeep, marginTop: 2,
+                      }}>
+                        ${(item.price / 100).toFixed(2)}
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity onPress={() => handleRemove(item.cartId)} style={{ padding: 8 }} hitSlop={6}>
+                      <Ionicons name="trash-outline" size={18} color={C.placeholder} />
+                    </TouchableOpacity>
+                  </View>
+                </MotiView>
+              )}
+            />
+
+            {/* Checkout bar */}
+            <View style={{
+              padding: 20,
+              borderTopWidth: 1, borderTopColor: C.divider,
+              backgroundColor: C.surface,
+            }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <Text style={{ fontFamily: 'DMSans_400Regular', fontSize: 15, color: C.textSecondary }}>
+                  Subtotal
+                </Text>
+                <Text style={{ fontFamily: 'PlayfairDisplay_700Bold', fontSize: 24, color: C.textPrimary }}>
+                  ${(getTotalPrice() / 100).toFixed(2)}
+                </Text>
+              </View>
+
+              <TouchableOpacity onPress={handleCheckout} disabled={isProcessing} activeOpacity={0.88}>
+                <LinearGradient
+                  colors={isProcessing ? ['#D4A84A', '#B88830'] : ['#F4CA44', '#C17B1A']}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                  style={{
+                    borderRadius: 18, paddingVertical: 18, alignItems: 'center',
+                    shadowColor: '#C17B1A', shadowOffset: { width: 0, height: 6 },
+                    shadowOpacity: 0.45, shadowRadius: 14, elevation: 8,
+                  }}
+                >
+                  {isProcessing ? (
+                    <ActivityIndicator color="#2B1800" />
+                  ) : (
+                    <Text style={{
+                      fontFamily: 'DMSans_700Bold', fontSize: 16, color: '#2B1800', letterSpacing: 0.3,
+                    }}>
+                      Place Order
+                    </Text>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </SafeAreaView>
+    </View>
   );
 }

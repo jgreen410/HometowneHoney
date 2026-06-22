@@ -10,6 +10,7 @@ import {
 } from '../types/schema';
 import { HoneyApi, RegionBox } from './HoneyApi';
 import { requireSupabase } from './supabase';
+import { getDefaultProductImage } from './MockApi';
 
 // --- Row → domain mappers ---
 
@@ -343,7 +344,7 @@ export const SupabaseApi: HoneyApi = {
         price: input.price,
         batch_type: input.batchType,
         stock_level: 0,
-        images: [],
+        images: getDefaultProductImage(input.name, input.batchType),
       })
       .select('*')
       .single();
